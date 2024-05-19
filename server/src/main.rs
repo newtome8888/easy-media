@@ -65,7 +65,6 @@ async fn play_video(
 fn load_config() -> Config {
     let file = File::open("config.yml").expect("打开配置文件失败！");
     let config: Config = serde_yaml::from_reader(file).expect("配置文件结构转换失败");
-    println!("{:?}", config);
 
     config
 }
