@@ -1,3 +1,4 @@
+use actix_cors::Cors;
 use actix_files::Files as ActixFiles;
 use actix_web::{
     get,
@@ -19,7 +20,9 @@ async fn main() -> Result<()> {
     let state = WebData::new(AppState { media_library });
 
     HttpServer::new(move || {
+        let cors = Cors::permissive();
         App::new()
+            .wrap(cors)
             // 注册全局状态
             .app_data(state.clone())
             // 列出视频文件
