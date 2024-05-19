@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
             // 提供视频文件的流式传输
             .service(ActixFiles::new("/videos", "./videos").show_files_listing())
     })
-    .bind("127.0.0.1:3000")?
+    .bind("0.0.0.0:3000")? // 0.0.0.0 allow inet access
     .run()
     .await
 }
@@ -37,14 +37,11 @@ async fn main() -> Result<()> {
 /// 列出指定文件夹下所有视频文件
 #[get("/videos")]
 async fn list_videos(data: WebData<AppState>) -> impl Responder {
-    let medias = data
-        .media_library
-        .list
-        .lock()
-        .expect("read media list failed")
-        .clone();
-
-    HttpResponse::Ok().json(medias)
+    let mtx = data.media_library.list.lock();
+    match mtx {
+        Ok(medias) => HttpResponse::Ok().json(medias.clone()),
+        Err(err) => HttpResponse::InternalServerError().json(err.to_string()),
+    }
 }
 
 /// 播放指定视频文件
@@ -53,15 +50,16 @@ async fn play_video(
     data: WebData<AppState>,
     req: HttpRequest,
     filename: WebPath<String>,
-) -> Result<HttpResponse> {
-    let map = data
-        .media_library
-        .map
-        .lock()
-        .expect("read media map failed");
-    let path = map.get(filename.as_str()).unwrap();
-    let file = actix_files::NamedFile::open(path)?;
-    Ok(file.into_response(&req))
+) -> impl Responder {
+    let mtx = data.media_library.map.lock();
+    match mtx {
+        Ok(map) => {
+            let path = map.get(filename.as_str()).unwrap();
+            let file = actix_files::NamedFile::open(path).unwrap();
+            file.into_response(&req)
+        }
+        Err(err) => HttpResponse::InternalServerError().json(err.to_string()),
+    }
 }
 
 fn load_config() -> Config {
@@ -82,6 +80,7 @@ fn load_media_library(dir: String) -> MediaLibrary {
 
 /// 异步方法用于定时更新媒体库
 async fn refresh_media_library(media_library: MediaLibrary, dir: String) {
+    println!("{}", dir);
     let mut interval = interval(Duration::from_secs(60)); // 每60秒检查一次
     loop {
         interval.tick().await; // 等待下一个间隔
@@ -90,20 +89,31 @@ async fn refresh_media_library(media_library: MediaLibrary, dir: String) {
         let mut map = media_library.map.lock().unwrap();
         let lib_map = WalkDir::new(&dir)
             .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| {
-                let extension = e.path().extension().and_then(|ext| ext.to_str());
-                if let Some(ext) = extension {
-                    ["mp4", "mkv", "avi"].contains(&ext)
-                } else {
-                    false
+            .filter_map(|item| match item {
+                Ok(it) => {
+                    if !it.file_type().is_file() {
+                        return None;
+                    }
+
+                    let extension = it.path().extension().and_then(|ext| ext.to_str());
+                    match extension {
+                        Some(ext) => {
+                            if ["mp4", "mkv", "avi"].contains(&ext) {
+                                let file_name = it.file_name().to_string_lossy().to_string();
+                                let path = it.path().to_path_buf();
+
+                                Some((file_name, path))
+                            } else {
+                                None
+                            }
+                        }
+                        None => None,
+                    }
                 }
-            })
-            .map(|e| {
-                let file_name = e.file_name().to_string_lossy().to_string();
-                let path = e.path().to_path_buf();
-                (file_name, path)
+                Err(err) => {
+                    println!("{:?}", err);
+                    None
+                }
             });
 
         // 清除当前数据
