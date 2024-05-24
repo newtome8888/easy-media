@@ -1,8 +1,8 @@
 use actix_cors::Cors;
-use actix_files::Files as ActixFiles;
+// use actix_files::Files as ActixFiles;
 use actix_web::{
     get,
-    web::{Data as WebData, Path as WebPath},
+    web::{self, Data as WebData, Path as WebPath},
     App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use serde::Deserialize;
@@ -15,32 +15,42 @@ use walkdir::WalkDir;
 
 #[actix_web::main]
 async fn main() -> Result<()> {
-    let config = load_config();
-    let media_library = load_media_library(config.media_directory.clone());
-    let state = WebData::new(AppState { media_library });
-
     HttpServer::new(move || {
         let cors = Cors::permissive();
+        let config = load_config();
+        let media_library = load_media_library(config.media_directory.clone());
+
         App::new()
+            // 跨域访问
             .wrap(cors)
             // 注册全局状态
-            .app_data(state.clone())
+            .app_data(WebData::new(config.clone()))
+            .app_data(WebData::new(media_library))
+            // .service(ActixFiles::new("/static", config.static_directory))
             // 列出视频文件
             .service(list_videos)
             // 播放视频文件
             .service(play_video)
-            // 提供视频文件的流式传输
-            .service(ActixFiles::new("/videos", "./videos").show_files_listing())
+        // 前端路由回退，所有未匹配的请求都返回index.html
+        .default_service(web::route().to(index))
     })
     .bind("0.0.0.0:3000")? // 0.0.0.0 allow inet access
     .run()
     .await
 }
 
+/// 默认重定向到首页
+async fn index() -> impl Responder {
+    let redirect_url = "http://localhost:1420";
+    HttpResponse::Found()
+        .append_header(("Location", redirect_url))
+        .finish()
+}
+
 /// 列出指定文件夹下所有视频文件
-#[get("/videos")]
-async fn list_videos(data: WebData<AppState>) -> impl Responder {
-    let mtx = data.media_library.list.lock();
+#[get("api/videos")]
+async fn list_videos(data: WebData<MediaLibrary>) -> impl Responder {
+    let mtx = data.list.lock();
     match mtx {
         Ok(medias) => HttpResponse::Ok().json(medias.clone()),
         Err(err) => HttpResponse::InternalServerError().json(err.to_string()),
@@ -48,18 +58,24 @@ async fn list_videos(data: WebData<AppState>) -> impl Responder {
 }
 
 /// 播放指定视频文件
-#[get("/play/{filename:.*}")]
+#[get("api/video/{filename:.*}")]
 async fn play_video(
-    data: WebData<AppState>,
+    data: WebData<MediaLibrary>,
     req: HttpRequest,
     filename: WebPath<String>,
 ) -> impl Responder {
-    let mtx = data.media_library.map.lock();
+    let mtx = data.map.lock();
     match mtx {
         Ok(map) => {
-            let path = map.get(filename.as_str()).unwrap();
-            let file = actix_files::NamedFile::open(path).unwrap();
-            file.into_response(&req)
+            if let Some(path) = map.get(filename.as_str()) {
+                match actix_files::NamedFile::open(path) {
+                    Ok(file) => file.into_response(&req),
+                    Err(err) => HttpResponse::InternalServerError().json(err.to_string()),
+                }
+            }
+            else{
+                HttpResponse::NotFound().finish()
+            }
         }
         Err(err) => HttpResponse::InternalServerError().json(err.to_string()),
     }
@@ -82,7 +98,6 @@ fn load_media_library(dir: String) -> MediaLibrary {
 
 /// 异步方法用于定时更新媒体库
 async fn refresh_media_library(media_library: MediaLibrary, dir: String) {
-    println!("{}", dir);
     let mut interval = interval(Duration::from_secs(60)); // 每60秒检查一次
     loop {
         interval.tick().await; // 等待下一个间隔
@@ -126,11 +141,6 @@ async fn refresh_media_library(media_library: MediaLibrary, dir: String) {
             map.insert(item.0, item.1);
         }
     }
-}
-
-#[derive(Clone)]
-struct AppState {
-    media_library: MediaLibrary,
 }
 
 #[derive(Debug, Deserialize, Clone)]
