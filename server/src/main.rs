@@ -16,7 +16,11 @@ use walkdir::WalkDir;
 #[actix_web::main]
 async fn main() -> Result<()> {
     HttpServer::new(move || {
-        let cors = Cors::permissive();
+        let cors = Cors::default()
+            .allowed_origin("http://localhost:1420")
+            .allow_any_header()
+            .allow_any_method()
+            .expose_any_header();
         let config = load_config();
         let media_library = load_media_library(config.media_directory.clone());
 
@@ -31,8 +35,8 @@ async fn main() -> Result<()> {
             .service(list_videos)
             // 播放视频文件
             .service(play_video)
-        // 前端路由回退，所有未匹配的请求都返回index.html
-        .default_service(web::route().to(index))
+            // 前端路由回退，所有未匹配的请求都返回index.html
+            .default_service(web::route().to(index))
     })
     .bind("0.0.0.0:3000")? // 0.0.0.0 allow inet access
     .run()
@@ -72,8 +76,7 @@ async fn play_video(
                     Ok(file) => file.into_response(&req),
                     Err(err) => HttpResponse::InternalServerError().json(err.to_string()),
                 }
-            }
-            else{
+            } else {
                 HttpResponse::NotFound().finish()
             }
         }
